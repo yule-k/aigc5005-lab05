@@ -1,0 +1,22 @@
+{
+  "threshold": 0.7,
+  "confusion_matrix": [
+    [
+      589,
+      44
+    ],
+    [
+      64,
+      53
+    ]
+  ],
+  "precision": 0.546,
+  "recall": 0.453,
+  "f1": 0.495,
+  "roc_auc": 0.821,
+  "cost": {
+    "flag_nobody": 1755,
+    "flag_everybody": 3000,
+    "model": 1348
+  }
+}

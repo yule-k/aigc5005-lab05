@@ -3,9 +3,12 @@
 Run with:  python -m latedeliveries.train
 """
 
+import json
 from pathlib import Path
 
+import joblib
 import pandas as pd
+import sklearn
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -17,11 +20,23 @@ from sklearn.model_selection import (
     cross_validate,
 )
 
-from latedeliveries.evaluation import choose_threshold, cost_by_threshold
-from latedeliveries.pipeline import SEED, build_pipeline, load_split
+from latedeliveries.evaluation import (
+    choose_threshold,
+    cost_by_threshold,
+    evaluate,
+    order_cost,
+)
+from latedeliveries.pipeline import (
+    CATEGORICAL,
+    NUMERIC,
+    SEED,
+    build_pipeline,
+    load_split,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORTS = ROOT / "reports"
+MODELS = ROOT / "models"
 METRICS = ["accuracy", "precision", "recall", "f1", "roc_auc"]
 # The baseline never predicts "late", so its precision is 0/0. Report it as 0.
 SCORING = {m: m for m in METRICS} | {
@@ -63,11 +78,18 @@ def compare_models(X_train, y_train, folds) -> pd.DataFrame:
 
 def tune_model(X_train, y_train, folds) -> GridSearchCV:
     """Grid search on the chosen model. ROC-AUC, because the threshold comes later."""
-    model = LogisticRegression(max_iter=5000, class_weight="balanced", solver="saga")
+    model = LogisticRegression(
+        max_iter=5000, class_weight="balanced", solver="saga", random_state=SEED
+    )
     search = GridSearchCV(
         build_pipeline(model), GRID, scoring="roc_auc", cv=folds, n_jobs=-1
     )
     return search.fit(X_train, y_train)
+
+
+def write_json(path: Path, record: dict) -> None:
+    """Save a dictionary as readable JSON."""
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
 def main() -> None:
@@ -92,6 +114,32 @@ def main() -> None:
     threshold = choose_threshold(y_train, probability)
     print(cost_by_threshold(y_train, probability).to_string(index=False))
     print("Threshold with the lowest out-of-fold cost:", threshold)
+
+    # Fit on the whole training set, then use the test set once.
+    final = search.best_estimator_.fit(X_train, y_train)
+    test_probability = final.predict_proba(X_test)[:, 1]
+    test = evaluate(y_test, test_probability, threshold)
+    test["cost"] = {
+        "flag_nobody": order_cost(y_test, [False] * len(y_test)),
+        "flag_everybody": order_cost(y_test, [True] * len(y_test)),
+        "model": order_cost(y_test, test_probability >= threshold),
+    }
+    write_json(REPORTS / "metrics.json", test)
+    print("Test set, used once:", test)
+
+    MODELS.mkdir(exist_ok=True)
+    joblib.dump(final, MODELS / "late_orders.joblib")
+    info = {
+        "scikit_learn": sklearn.__version__,
+        "seed": SEED,
+        "threshold": threshold,
+        "numeric_features": NUMERIC,
+        "categorical_features": CATEGORICAL,
+        "best_params": search.best_params_,
+        "test": test,
+    }
+    write_json(MODELS / "model_info.json", info)
+    print("Saved models/late_orders.joblib and models/model_info.json")
 
 
 if __name__ == "__main__":
